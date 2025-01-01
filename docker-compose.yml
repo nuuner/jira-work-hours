@@ -1,0 +1,7 @@
+services:
+  web:
+    build: .
+    ports:
+      - "4012:4012"
+    env_file:
+      - .env 
