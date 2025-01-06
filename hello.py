@@ -160,8 +160,8 @@ def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
     ]
 
     stats_values = [
-        f"{avg_hours:.2f}h",
-        f"{'+' if current_diff >= 0 else ''}{current_diff:.2f}h",
+        format_time(avg_hours),
+        format_time(current_diff, show_plus=True),
     ]
 
     if not is_past_month:
@@ -169,7 +169,7 @@ def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
             ["Working days remaining", "Required hours per remaining work day"]
         )
         stats_values.extend(
-            [f"{remaining_working_days}", f"{required_hours_per_day:.2f}h"]
+            [f"{remaining_working_days}", format_time(required_hours_per_day)]
         )
 
     value_x = padding + (cell_size["width"] * 4 - 12)
@@ -206,7 +206,7 @@ def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
                 stroke_width=0.5,
             )
         )
-        d.append(draw.Text(f"{hours:.1f}h", 8, graph_x - 2, y_pos, text_anchor="end"))
+        d.append(draw.Text(f"{int(hours)}h", 8, graph_x - 2, y_pos, text_anchor="end"))
 
     target_y = graph_y + graph_height - (7.5 / max_hours) * graph_height
     d.append(
@@ -302,7 +302,7 @@ def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
                 hours_color = "#0D47A1" if date_str in dopust_days else "black"
                 d.append(
                     draw.Text(
-                        f"{hours_worked:.2f}h", 10, x + 8, y + 32, fill=hours_color
+                        format_time(hours_worked), 10, x + 8, y + 32, fill=hours_color
                     )
                 )
 
@@ -310,7 +310,7 @@ def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
                 expected_hours = 7.5 if day_type == "WORKING_DAY" else 0
                 diff = hours_worked - expected_hours
                 diff_color = "#2E7D32" if diff >= 0 else "#C62828"
-                diff_text = f"{'+' if diff >= 0 else ''}{diff:.2f}"
+                diff_text = format_time(diff, show_plus=True)
                 d.append(draw.Text(diff_text, 10, x + 8, y + 44, fill=diff_color))
 
                 d.append(
@@ -327,7 +327,7 @@ def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
                 if date_str in running_totals:
                     total = running_totals[date_str]
                     total_color = "#2E7D32" if total >= 0 else "#C62828"
-                    total_text = f"{'+' if total >= 0 else ''}{total:.2f}"
+                    total_text = format_time(total, show_plus=True)
                     d.append(draw.Text(total_text, 10, x + 8, y + 58, fill=total_color))
             else:
                 d.append(
@@ -346,6 +346,12 @@ def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
         raise ValueError("Failed to generate SVG content")
     return svg_content
 
+def format_time(hours: float, show_plus: bool = False) -> str:
+    sign = "-" if hours < 0 else ("+" if show_plus and hours > 0 else "")
+    total_minutes = int(abs(hours) * 60)
+    h = total_minutes // 60
+    m = total_minutes % 60
+    return f"{sign}{h}h {m}m"
 
 @app.get("/calendar")
 async def get_calendar(
