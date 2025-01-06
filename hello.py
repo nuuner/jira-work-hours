@@ -9,6 +9,7 @@ from fastapi.responses import Response
 from typing import Annotated
 import hmac
 import hashlib
+import math
 
 app = FastAPI()
 
@@ -227,12 +228,36 @@ def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
         1, (available_width - (days_in_month - 1) * bar_spacing) / days_in_month
     )
 
+    def draw_stars(d, x, y, count, size=8):
+        for i in range(min(count, 5)):  # Limit to 5 stars maximum
+            star_x = x + cell_size["width"] - (size + 2) * (i + 1)
+            star_y = y + size + 2
+            
+            # Create a 5-pointed star path
+            points = []
+            for j in range(5):
+                angle = -90 + j * 72  # Start from top point
+                outer_x = star_x + size/2 * math.cos(math.radians(angle))
+                outer_y = star_y + size/2 * math.sin(math.radians(angle))
+                points.append((outer_x, outer_y))
+                
+                inner_angle = angle + 36
+                inner_x = star_x + size/4 * math.cos(math.radians(inner_angle))
+                inner_y = star_y + size/4 * math.sin(math.radians(inner_angle))
+                points.append((inner_x, inner_y))
+            
+            # Convert points to SVG path
+            path_data = f"M {points[0][0]},{points[0][1]}"
+            for px, py in points[1:]:
+                path_data += f" L {px},{py}"
+            path_data += " Z"
+            
+            d.append(draw.Path(path_data, fill="#2E7D32"))
+
     for day in range(1, days_in_month + 1):
         date_str = f"{year}-{month:02d}-{day:02d}"
-        hours = worked_time.get(date_str, 0) / 3600
-        bar_height = (hours / max_hours) * graph_height
+        hours = worked_time.get(date_str, 0) / 3600 
         bar_x = graph_x + 10 + (day - 1) * (bar_width + bar_spacing)
-        bar_y = graph_y + graph_height - bar_height
 
         if date_str in dopust_days:
             bar_color = "#0D47A1"
@@ -249,9 +274,15 @@ def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
                 bar_color = "#EF6C00"
             elif hours < upper_margin:
                 bar_color = "#1976D2"
-            else:
+            elif hours < 10:
                 bar_color = "#2E7D32"
+            else:
+                bar_color = "#9C27B0"
 
+        visible_hours = min(hours, 10)
+        bar_height = (visible_hours / max_hours) * graph_height
+        bar_y = graph_y + graph_height - bar_height
+        
         d.append(draw.Rectangle(bar_x, bar_y, bar_width, bar_height, fill=bar_color))
 
         if day == 1 or day == days_in_month or day % 5 == 0:
@@ -296,9 +327,18 @@ def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
                         stroke="black",
                     )
                 )
+                
+                # Add overtime stars
+                hours_worked = worked_time.get(date_str, 0) / 3600
+                day_type = day_types.get(date_str, "WORKING_DAY")
+                expected_hours = 7.5 if day_type == "WORKING_DAY" else 0
+                overtime = max(0, hours_worked - expected_hours)
+                star_count = int(overtime * 2)  # 2 stars per hour (1 star per 30 minutes)
+                if star_count > 0:
+                    draw_stars(d, x, y, star_count)
+
                 d.append(draw.Text(str(day), 12, x + 8, y + 16))
 
-                hours_worked = worked_time.get(date_str, 0) / 3600
                 hours_color = "#0D47A1" if date_str in dopust_days else "black"
                 d.append(
                     draw.Text(
