@@ -29,6 +29,7 @@ def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
 
     worked_time = {}
     dopust_days = set()  # Track days with annual leave
+    sick_days = set()    # Track days with sick leave
     try:
         worklogs = jira.tempo_timesheets_get_worklogs(
             date_from=from_date, date_to=to_date, username=jira_username
@@ -46,10 +47,16 @@ def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
                         "issue" in worklog
                         and isinstance(worklog["issue"], dict)
                         and "summary" in worklog["issue"]
-                        and worklog["issue"]["summary"].startswith("Letni dopust")
                     ):
-                        time_spent = 7.5 * 3600  # 7.5 hours in seconds
-                        dopust_days.add(extracted_date)
+                        summary = worklog["issue"]["summary"]
+                        if summary.startswith("Letni dopust"):
+                            time_spent = 7.5 * 3600  # 7.5 hours in seconds
+                            dopust_days.add(extracted_date)
+                        elif summary.startswith("Bolniška odsotnost"):
+                            time_spent = 7.5 * 3600  # 7.5 hours in seconds
+                            sick_days.add(extracted_date)
+                        else:
+                            time_spent = worklog.get("timeSpentSeconds", 0)
                     else:
                         time_spent = worklog.get("timeSpentSeconds", 0)
                     if extracted_date:
@@ -254,13 +261,75 @@ def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
             
             d.append(draw.Path(path_data, fill="#2E7D32"))
 
+    def draw_sickness_icon(d, x, y):
+        # Position the icon on the right side of the cell, at the same height as hours
+        icon_x = x + cell_size["width"] - 32  # 32 pixels from right edge
+        icon_y = y + 24  # Align with hours text
+        
+        # Scale the icon to appropriate size (16x16)
+        scale = 0.67  # 16/24 to scale from 24x24 to 16x16
+        
+        # SVG path data for the sickness icon
+        paths = [
+            "M16.3188 4.39811C16.2142 4.63431 16.1229 4.86707 16.0449 5.0964C14.8581 4.39956 13.4757 4 12 4C8.26861 4 5.13388 6.55463 4.24939 10.0103C3.32522 10.0868 2.51988 10.5821 2.02371 11.306C2.38011 6.10691 6.71045 2 12 2C13.7733 2 15.4388 2.46156 16.8829 3.27111C16.6426 3.71554 16.4546 4.09121 16.3188 4.39811Z",
+            "M16.6694 9.62311C16.782 9.7483 16.8987 9.86257 17.0193 9.96593C16.9678 9.9932 16.915 10.0195 16.8609 10.0447C16.35 10.2824 15.6778 10.438 14.9463 10.242C14.2147 10.046 13.7104 9.57517 13.3868 9.11381C13.0676 8.65868 12.8921 8.16974 12.8252 7.82758L14.2973 7.53961C14.3274 7.69373 14.4264 7.98373 14.6149 8.25248C14.799 8.51501 15.0357 8.71304 15.3345 8.7931C15.5814 8.85925 15.8319 8.83445 16.0755 8.7475C16.2274 9.06007 16.4253 9.35194 16.6694 9.62311Z",
+            "M12 22C7.62613 22 3.90811 19.1919 2.55043 15.2802C3.07478 15.729 3.75574 16 4.50001 16C4.68514 16 4.86636 15.9832 5.04222 15.9511C6.41837 18.3693 9.01875 20 12 20C16.4183 20 20 16.4183 20 12C20 11.5146 19.9568 11.0392 19.8739 10.5776C20.4168 10.4171 20.9024 10.0989 21.3306 9.62311C21.4357 9.50632 21.5323 9.38569 21.6203 9.26122C21.8676 10.1316 22 11.0503 22 12C22 17.5228 17.5229 22 12 22Z",
+            "M9.70411 7.53961C9.67396 7.69373 9.57502 7.98373 9.38652 8.25248C9.20239 8.51501 8.96567 8.71304 8.66689 8.7931C8.36811 8.87315 8.0641 8.82001 7.77337 8.68472C7.47575 8.54623 7.24507 8.34455 7.1419 8.22615L6.01101 9.21159C6.24005 9.47444 6.63649 9.81014 7.14052 10.0447C7.65143 10.2824 8.32358 10.438 9.05512 10.242C9.78666 10.046 10.291 9.57517 10.6146 9.11381C10.9338 8.65868 11.1093 8.16974 11.1762 7.82758L9.70411 7.53961Z",
+            "M8.99481 13.4947C9.79184 12.6977 10.8728 12.2499 12 12.2499C13.1272 12.2499 14.2082 12.6977 15.0052 13.4947C15.8022 14.2917 16.25 15.3727 16.25 16.4999V17.2499H7.75001V16.4999C7.75001 16.2383 7.77413 15.9792 7.82113 15.7256L5.5016 14.7315C5.20706 14.9023 4.86495 15 4.5 15C3.39543 15 2.5 14.1046 2.5 13C2.5 11.8954 3.39543 11 4.5 11C5.59904 11 6.49103 11.8865 6.49993 12.9834L8.63815 13.8998C8.74775 13.7581 8.86677 13.6227 8.99481 13.4947ZM11.9683 15.7499C11.8933 15.4605 11.6899 15.2077 11.3939 15.0809L10.0896 14.5218C10.6018 14.0271 11.2866 13.7499 12 13.7499C12.7294 13.7499 13.4288 14.0396 13.9446 14.5554C14.2793 14.8901 14.5189 15.3024 14.6458 15.7499H11.9683Z",
+            "M19 9C18.45 9 17.9792 8.80417 17.5875 8.4125C17.1958 8.02083 17 7.55 17 7C17 6.55 17.125 6.07083 17.375 5.5625C17.625 5.05417 18.1667 4.2 19 3C19.8333 4.2 20.375 5.05417 20.625 5.5625C20.875 6.07083 21 6.55 21 7C21 7.55 20.8042 8.02083 20.4125 8.4125C20.0208 8.80417 19.55 9 19 9Z"
+        ]
+        
+        # Create a group for the icon with translation and scale
+        g = draw.Group(transform=f'translate({icon_x},{icon_y}) scale({scale})')
+        
+        # Add each path to the group
+        for path_data in paths:
+            g.append(draw.Path(path_data, fill="#9575CD"))
+        
+        # Add the group to the drawing
+        d.append(g)
+
+    def draw_holiday_icon(d, x, y):
+        # Position the icon on the right side of the cell, at the same height as hours
+        icon_x = x + cell_size["width"] - 32  # 32 pixels from right edge
+        icon_y = y + 24  # Align with hours text
+        
+        # Scale the icon to appropriate size (16x16)
+        scale = 0.33  # 16/48 to scale from 48x48 to 16x16
+        
+        # Create a group for the icon with translation and scale
+        g = draw.Group(transform=f'translate({icon_x},{icon_y}) scale({scale})')
+        
+        # SVG paths for the holiday icon
+        paths = [
+            {"d": "M4 24H7", "stroke-width": "4"},
+            {"d": "M10 10L12 12", "stroke-width": "4"},
+            {"d": "M24 4V7", "stroke-width": "4"},
+            {"d": "M14 24C14 18.4776 18.4776 14 24 14C29.5224 14 34 18.4776 34 24C34 27.3674 32.3357 30.3458 29.785 32.1578", "stroke-width": "4"},
+            {"d": "M38 10L36 12", "stroke-width": "4"},
+            {"d": "M44 24L41 24", "stroke-width": "4"},
+            {"d": "M37.9814 37.982L36.3614 36.362", "stroke-width": "4"},
+            {"d": "M23.4999 28C20.4999 28 14 28.2 14 31C14 33.8 18.6058 33.7908 20.9998 34C23 34.1747 26.4624 35.6879 25.9999 38C24.9998 43 8.99982 42 4.99994 42", "stroke-width": "4"}
+        ]
+        
+        # Add each path to the group
+        for path_data in paths:
+            path = draw.Path(path_data["d"], stroke="#1976D2", stroke_width=path_data["stroke-width"], 
+                           stroke_linecap="round", stroke_linejoin="round", fill="none")
+            g.append(path)
+        
+        # Add the group to the drawing
+        d.append(g)
+
     for day in range(1, days_in_month + 1):
         date_str = f"{year}-{month:02d}-{day:02d}"
-        hours = worked_time.get(date_str, 0) / 3600 
+        hours = worked_time.get(date_str, 0) / 3600
         bar_x = graph_x + 10 + (day - 1) * (bar_width + bar_spacing)
 
         if date_str in dopust_days:
-            bar_color = "#0D47A1"
+            bar_color = "#0D47A1"  # Dark blue for annual leave
+        elif date_str in sick_days:
+            bar_color = "#9575CD"  # Pale purple for sick leave
         else:
             min_hours = 4
             lower_margin = 7 + (25 / 60)
@@ -337,9 +406,16 @@ def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
                 if star_count > 0:
                     draw_stars(d, x, y, star_count)
 
+                # Add sickness icon if it's a sick day
+                if date_str in sick_days:
+                    draw_sickness_icon(d, x, y-4)
+                # Add holiday icon if it's an annual leave day
+                elif date_str in dopust_days:
+                    draw_holiday_icon(d, x, y-4)
+
                 d.append(draw.Text(str(day), 12, x + 8, y + 16))
 
-                hours_color = "#0D47A1" if date_str in dopust_days else "black"
+                hours_color = "#0D47A1" if date_str in dopust_days else "#9575CD" if date_str in sick_days else "black"
                 d.append(
                     draw.Text(
                         format_time(hours_worked), 10, x + 8, y + 32, fill=hours_color
