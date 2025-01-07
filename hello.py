@@ -330,6 +330,8 @@ def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
             bar_color = "#0D47A1"  # Dark blue for annual leave
         elif date_str in sick_days:
             bar_color = "#9575CD"  # Pale purple for sick leave
+        elif day_types.get(date_str) == "NON_WORKING_DAY" and hours > 0:
+            bar_color = "#2E7D32"  # Green for work on non-working days
         else:
             min_hours = 4
             lower_margin = 7 + (25 / 60)
