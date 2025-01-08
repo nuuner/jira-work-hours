@@ -20,7 +20,7 @@ def generate_request_hash(year: int, month: int, username: str) -> str:
     h = hmac.new(secret_key.encode('utf-8'), message, hashlib.sha256)
     return h.hexdigest()
 
-def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
+def create_calendar_svg(year: int, month: int, jira_username: str, additional_vacation_days: set[str] = set()) -> str:
     load_dotenv()
     jira = Jira(os.getenv("JIRA_URL"), token=os.getenv("JIRA_API_TOKEN"))
 
@@ -65,6 +65,12 @@ def create_calendar_svg(year: int, month: int, jira_username: str) -> str:
                         )
     except Exception as e:
         print(f"Error fetching worklog data: {str(e)}")
+
+    # Add additional vacation days
+    for vacation_date in additional_vacation_days:
+        if vacation_date.startswith(f"{year}-{month:02d}"):  # Only process dates in the target month
+            worked_time[vacation_date] = 7.5 * 3600  # 7.5 hours in seconds
+            dopust_days.add(vacation_date)
 
     day_types = {}
     try:
@@ -477,12 +483,24 @@ async def get_calendar(
     month: Annotated[int, Query(ge=1, le=12)],
     username: str,
     hash: str,
+    vacationDays: Annotated[str | None, Query(description="CSV of ISO dates (YYYY-MM-DD) to be treated as vacation days")] = None,
 ) -> Response:
     expected_hash = generate_request_hash(year, month, username)
     if not hmac.compare_digest(hash, expected_hash):
         raise HTTPException(status_code=403, detail="Invalid hash")
+    
+    # Parse vacation days if provided
+    additional_vacation_days = set()
+    if vacationDays:
+        try:
+            additional_vacation_days = set(date.strip() for date in vacationDays.split(','))
+            # Validate date format
+            for date_str in additional_vacation_days:
+                date.fromisoformat(date_str)  # This will raise ValueError if format is invalid
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format in vacationDays. Use ISO format YYYY-MM-DD")
         
-    svg_content = create_calendar_svg(year, month, username)
+    svg_content = create_calendar_svg(year, month, username, additional_vacation_days)
     headers = {
         "Cache-Control": "public, max-age=60",
         "Content-Type": "image/svg+xml",
