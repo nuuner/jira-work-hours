@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 import os
 from atlassian import Jira
 from dotenv import load_dotenv
@@ -6,12 +7,22 @@ import calendar
 from datetime import date
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import Response
-from typing import Annotated
+from fastapi_cache.backends.inmemory import InMemoryBackend
+from typing import Annotated, AsyncIterator
+from fastapi_cache.decorator import cache
 import hmac
 import hashlib
 import math
 
-app = FastAPI()
+from fastapi_cache import FastAPICache
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    FastAPICache.init(InMemoryBackend())
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 def generate_request_hash(year: int, month: int, username: str) -> str:
     load_dotenv()
@@ -478,6 +489,7 @@ def format_time(hours: float, show_plus: bool = False) -> str:
     return f"{sign}{h}h {m}m"
 
 @app.get("/calendar")
+@cache(expire=60*5)
 async def get_calendar(
     year: Annotated[int, Query(ge=2000, le=2100)],
     month: Annotated[int, Query(ge=1, le=12)],
