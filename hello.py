@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 import os
 from atlassian import Jira
 from dotenv import load_dotenv
@@ -11,22 +12,47 @@ import hmac
 import hashlib
 import math
 
-cache_duration = int(os.getenv("CACHE_DURATION", "60"))
-
-app = FastAPI()
+cache_duration = 60
+secret_key = "default-secret-key-change-me"
+jira_url = "invalid-url"
+jira_api_token = "invalid-token"
+jira = None
 
 svg_cache = {}
 
-def generate_request_hash(year: int, month: int, username: str) -> str:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     load_dotenv()
-    secret_key = os.getenv("HASH_SECRET_KEY", "default-secret-key-change-me")
+    global cache_duration
+    cache_duration = int(os.getenv("CACHE_DURATION", cache_duration))
+    global secret_key
+    secret_key = os.getenv("HASH_SECRET_KEY", secret_key)
+
+    global jira_url
+    jira_url = os.getenv("JIRA_URL")
+    global jira_api_token
+    jira_api_token = os.getenv("JIRA_API_TOKEN")
+    if not jira_url or not jira_api_token:
+        raise ValueError("JIRA_URL or JIRA_API_TOKEN is not set")
+
+    global jira
+    jira = Jira(jira_url, token=jira_api_token)
+
+    try:
+        jira.myself()
+    except Exception as e:
+        raise ValueError(f"Failed to authenticate with Jira: {str(e)}")
+
+    yield
+
+app = FastAPI(lifespan=lifespan)
+
+def generate_request_hash(year: int, month: int, username: str) -> str:
     message = f"{year}-{month}-{username}".encode('utf-8')
     h = hmac.new(secret_key.encode('utf-8'), message, hashlib.sha256)
     return h.hexdigest()
 
 def create_calendar_svg(year: int, month: int, jira_username: str, additional_vacation_days: set[str] = set()) -> str:
-    load_dotenv()
-    jira = Jira(os.getenv("JIRA_URL"), token=os.getenv("JIRA_API_TOKEN"))
 
     from_date = f"{year}-{month:02d}-01"
     to_date = f"{year}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
@@ -522,7 +548,7 @@ async def get_calendar(
         }
 
     headers = {
-        "Cache-Control": "public, max-age=60",
+        "Cache-Control": f"public, max-age={cache_duration}",
         "Content-Type": "image/svg+xml",
     }
     return Response(content=svg_content, headers=headers)
