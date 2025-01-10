@@ -3,7 +3,7 @@ from atlassian import Jira
 from dotenv import load_dotenv
 import drawsvg as draw
 import calendar
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import Response
 from typing import Annotated
@@ -11,7 +11,11 @@ import hmac
 import hashlib
 import math
 
+cache_duration = int(os.getenv("CACHE_DURATION", "60"))
+
 app = FastAPI()
+
+svg_cache = {}
 
 def generate_request_hash(year: int, month: int, username: str) -> str:
     load_dotenv()
@@ -53,7 +57,10 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
                             time_spent = 7.5 * 3600  # 7.5 hours in seconds
                             dopust_days.add(extracted_date)
                         elif summary.startswith("Bolniška odsotnost"):
-                            time_spent = 7.5 * 3600  # 7.5 hours in seconds
+                            time_spent = worklog.get("timeSpentSeconds", 0)
+                            # for every 8 hours of work, remove half an hour of vacation
+                            factor_of_time_to_remove = (time_spent / 8) * 0.5
+                            time_spent = time_spent - factor_of_time_to_remove
                             sick_days.add(extracted_date)
                         else:
                             time_spent = worklog.get("timeSpentSeconds", 0)
@@ -466,6 +473,7 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
                 )
 
     svg_content = d.as_svg()
+
     if svg_content is None:
         raise ValueError("Failed to generate SVG content")
     return svg_content
@@ -489,18 +497,30 @@ async def get_calendar(
     if not hmac.compare_digest(hash, expected_hash):
         raise HTTPException(status_code=403, detail="Invalid hash")
     
-    # Parse vacation days if provided
-    additional_vacation_days = set()
-    if vacationDays:
-        try:
-            additional_vacation_days = set(date.strip() for date in vacationDays.split(','))
-            # Validate date format
-            for date_str in additional_vacation_days:
-                date.fromisoformat(date_str)  # This will raise ValueError if format is invalid
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid date format in vacationDays. Use ISO format YYYY-MM-DD")
+    # Check cache first
+    cache_key = f"{year}-{month}-{username}-{vacationDays or ''}"
+    if cache_key in svg_cache and svg_cache[cache_key]["timestamp"] > datetime.now() - timedelta(minutes=cache_duration):
+        svg_content = svg_cache[cache_key]["svg"]
+    else:
+        # Parse vacation days if provided
+        additional_vacation_days = set()
+        if vacationDays:
+            try:
+                additional_vacation_days = set(date.strip() for date in vacationDays.split(','))
+                # Validate date format
+                for date_str in additional_vacation_days:
+                    date.fromisoformat(date_str)  # This will raise ValueError if format is invalid
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid date format in vacationDays. Use ISO format YYYY-MM-DD")
+            
+        svg_content = create_calendar_svg(year, month, username, additional_vacation_days)
         
-    svg_content = create_calendar_svg(year, month, username, additional_vacation_days)
+        # Update cache
+        svg_cache[cache_key] = {
+            "svg": svg_content,
+            "timestamp": datetime.now()
+        }
+
     headers = {
         "Cache-Control": "public, max-age=60",
         "Content-Type": "image/svg+xml",
