@@ -12,7 +12,7 @@ import hmac
 import hashlib
 import math
 
-cache_duration = 60
+cache_duration = 5  # Default is 5 minutes
 secret_key = "default-secret-key-change-me"
 jira_url = "invalid-url"
 jira_api_token = "invalid-token"
@@ -548,7 +548,7 @@ async def get_calendar(
         }
 
     headers = {
-        "Cache-Control": f"public, max-age={cache_duration}",
+        "Cache-Control": f"public, max-age={cache_duration * 60}",  # Convert minutes to seconds for HTTP header
         "Content-Type": "image/svg+xml",
     }
     return Response(content=svg_content, headers=headers)
