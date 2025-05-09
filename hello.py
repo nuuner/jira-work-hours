@@ -364,13 +364,12 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
         date_str = f"{year}-{month:02d}-{day:02d}"
         hours = worked_time.get(date_str, 0) / 3600
         bar_x = graph_x + 10 + (day - 1) * (bar_width + bar_spacing)
+        current_day_type = day_types.get(date_str)
 
         if date_str in dopust_days:
             bar_color = "#0D47A1"  # Dark blue for annual leave
         elif date_str in sick_days:
             bar_color = "#9575CD"  # Pale purple for sick leave
-        elif day_types.get(date_str) == "NON_WORKING_DAY" and hours > 0:
-            bar_color = "#2E7D32"  # Green for work on non-working days
         else:
             min_hours = 4
             lower_margin = 7 + (25 / 60)
@@ -388,6 +387,12 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
                 bar_color = "#2E7D32"
             else:
                 bar_color = "#9C27B0"
+
+            # Add new logic here:
+            # If it's a holiday type with work, ensure color is at least blue
+            if (current_day_type in ["HOLIDAY", "HOLIDAY_AND_NON_WORKING_DAY", "NON_WORKING_DAY"]) and hours > 0:
+                if bar_color == "#C62828" or bar_color == "#EF6C00":
+                    bar_color = "#1976D2"
 
         visible_hours = min(hours, 10)
         bar_height = (visible_hours / max_hours) * graph_height
