@@ -388,7 +388,6 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
             else:
                 bar_color = "#9C27B0"
 
-            # Add new logic here:
             # If it's a holiday type with work, ensure color is at least blue
             if (current_day_type in ["HOLIDAY", "HOLIDAY_AND_NON_WORKING_DAY", "NON_WORKING_DAY"]) and hours > 0:
                 if bar_color == "#C62828" or bar_color == "#EF6C00":
