@@ -171,9 +171,30 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
         target_month.year == today.year and target_month.month == today.month
     )
 
-    worked_days = len(set(worked_time.keys()))
+    # Count actual working days that have passed (for meaningful average)
     total_hours_worked = sum(seconds / 3600 for seconds in worked_time.values())
-    avg_hours = total_hours_worked / worked_days if worked_days > 0 else 0
+
+    # Determine the last day to count for average calculation
+    if is_past_month:
+        last_day_for_avg = calendar.monthrange(year, month)[1]
+    elif is_current_month:
+        last_day_for_avg = today.day
+    else:
+        # Future month - no days have passed yet
+        last_day_for_avg = 0
+
+    # Count working days that have passed (excluding vacation and pre-start days)
+    elapsed_working_days = 0
+    for day in range(1, last_day_for_avg + 1):
+        date_str = f"{year}-{month:02d}-{day:02d}"
+        # Skip if before started_working
+        if started_working and date_str < started_working:
+            continue
+        # Count if it's a working day and not a vacation day
+        if day_types.get(date_str) == "WORKING_DAY" and date_str not in dopust_days:
+            elapsed_working_days += 1
+
+    avg_hours = total_hours_worked / elapsed_working_days if elapsed_working_days > 0 else 0
 
     remaining_working_days = 0
     if not is_past_month:
