@@ -52,7 +52,7 @@ def generate_request_hash(year: int, month: int, username: str) -> str:
     h = hmac.new(secret_key.encode('utf-8'), message, hashlib.sha256)
     return h.hexdigest()
 
-def create_calendar_svg(year: int, month: int, jira_username: str, additional_vacation_days: set[str] = set(), daily_hours: float = 7.5) -> str:
+def create_calendar_svg(year: int, month: int, jira_username: str, additional_vacation_days: set[str] = set(), daily_hours: float = 7.5, started_working: str | None = None) -> str:
 
     from_date = f"{year}-{month:02d}-01"
     to_date = f"{year}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
@@ -135,7 +135,11 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
     for day in range(1, calendar.monthrange(year, month)[1] + 1):
         date_str = f"{year}-{month:02d}-{day:02d}"
         day_type = day_types.get(date_str, "WORKING_DAY")
-        expected_hours = daily_hours if day_type == "WORKING_DAY" else 0
+        # Check if date is before started_working
+        if started_working and date_str < started_working:
+            expected_hours = 0
+        else:
+            expected_hours = daily_hours if day_type == "WORKING_DAY" else 0
         hours_worked = worked_time.get(date_str, 0) / 3600
         running_total += hours_worked - expected_hours
         running_totals[date_str] = running_total
@@ -366,7 +370,10 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
         bar_x = graph_x + 10 + (day - 1) * (bar_width + bar_spacing)
         current_day_type = day_types.get(date_str)
 
-        if date_str in dopust_days:
+        # Grey out bars for dates before started_working
+        if started_working and date_str < started_working:
+            bar_color = "#CCCCCC"
+        elif date_str in dopust_days:
             bar_color = "#0D47A1"  # Dark blue for annual leave
         elif date_str in sick_days:
             bar_color = "#9575CD"  # Pale purple for sick leave
@@ -430,7 +437,11 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
 
             if day != 0:
                 date_str = f"{year}-{month:02d}-{day:02d}"
-                fill_color = colors[day_types.get(date_str, "WORKING_DAY")]
+                # Grey out dates before started_working
+                if started_working and date_str < started_working:
+                    fill_color = "#E0E0E0"
+                else:
+                    fill_color = colors[day_types.get(date_str, "WORKING_DAY")]
                 d.append(
                     draw.Rectangle(
                         x,
@@ -445,7 +456,11 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
                 # Add overtime stars
                 hours_worked = worked_time.get(date_str, 0) / 3600
                 day_type = day_types.get(date_str, "WORKING_DAY")
-                expected_hours = daily_hours if day_type == "WORKING_DAY" else 0
+                # Check if date is before started_working
+                if started_working and date_str < started_working:
+                    expected_hours = 0
+                else:
+                    expected_hours = daily_hours if day_type == "WORKING_DAY" else 0
                 overtime = max(0, hours_worked - expected_hours)
                 star_count = int(overtime * 2)  # 2 stars per hour (1 star per 30 minutes)
                 if star_count > 0:
@@ -468,7 +483,11 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
                 )
 
                 day_type = day_types.get(date_str, "WORKING_DAY")
-                expected_hours = daily_hours if day_type == "WORKING_DAY" else 0
+                # Check if date is before started_working
+                if started_working and date_str < started_working:
+                    expected_hours = 0
+                else:
+                    expected_hours = daily_hours if day_type == "WORKING_DAY" else 0
                 diff = hours_worked - expected_hours
                 diff_color = "#2E7D32" if diff >= 0 else "#C62828"
                 diff_text = format_time(diff, show_plus=True)
@@ -523,13 +542,21 @@ async def get_calendar(
     hash: str,
     vacationDays: Annotated[str | None, Query(description="CSV of ISO dates (YYYY-MM-DD) to be treated as vacation days")] = None,
     dailyHours: Annotated[float, Query(ge=1, le=24, description="Target daily work hours")] = 7.5,
+    startedWorking: Annotated[str | None, Query(description="ISO date (YYYY-MM-DD) when work started - days before this are greyed out with 0 goal")] = None,
 ) -> Response:
     expected_hash = generate_request_hash(year, month, username)
     if not hmac.compare_digest(hash, expected_hash):
         raise HTTPException(status_code=403, detail="Invalid hash")
-    
+
+    # Validate startedWorking date if provided
+    if startedWorking:
+        try:
+            date.fromisoformat(startedWorking)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format in startedWorking. Use ISO format YYYY-MM-DD")
+
     # Check cache first
-    cache_key = f"{year}-{month}-{username}-{vacationDays or ''}-{dailyHours}"
+    cache_key = f"{year}-{month}-{username}-{vacationDays or ''}-{dailyHours}-{startedWorking or ''}"
     if cache_key in svg_cache and svg_cache[cache_key]["timestamp"] > datetime.now() - timedelta(minutes=cache_duration):
         svg_content = svg_cache[cache_key]["svg"]
     else:
@@ -544,7 +571,7 @@ async def get_calendar(
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid date format in vacationDays. Use ISO format YYYY-MM-DD")
 
-        svg_content = create_calendar_svg(year, month, username, additional_vacation_days, dailyHours)
+        svg_content = create_calendar_svg(year, month, username, additional_vacation_days, dailyHours, startedWorking)
         
         # Update cache
         svg_cache[cache_key] = {
