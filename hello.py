@@ -123,14 +123,11 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
 
     # Helper function to determine if a date is a working day
     def is_working_day(date_str: str) -> bool:
-        """Returns True if the date is a working day (not vacation, not before start date, and marked as WORKING_DAY)"""
+        """Returns True if the date is a working day (not before start date, and marked as WORKING_DAY). Vacation and sick days ARE working days."""
         # Skip if before started_working
         if started_working and date_str < started_working:
             return False
-        # Not a working day if it's a vacation day
-        if date_str in dopust_days:
-            return False
-        # Check if it's marked as a working day
+        # Check if it's marked as a working day (vacation and sick days are working days)
         return day_types.get(date_str) == "WORKING_DAY"
 
     cell_size = {"width": 80, "height": 65}
