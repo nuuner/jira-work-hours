@@ -232,7 +232,7 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
     ]
 
     stats_values = [
-        format_time(avg_hours),
+        f"({elapsed_working_days}) {format_time(avg_hours)}",
         format_time(current_diff, show_plus=True),
     ]
 
