@@ -121,6 +121,18 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
     except Exception as e:
         print(f"Error fetching Jira data: {str(e)}")
 
+    # Helper function to determine if a date is a working day
+    def is_working_day(date_str: str) -> bool:
+        """Returns True if the date is a working day (not vacation, not before start date, and marked as WORKING_DAY)"""
+        # Skip if before started_working
+        if started_working and date_str < started_working:
+            return False
+        # Not a working day if it's a vacation day
+        if date_str in dopust_days:
+            return False
+        # Check if it's marked as a working day
+        return day_types.get(date_str) == "WORKING_DAY"
+
     cell_size = {"width": 80, "height": 65}
     padding = 8
     colors = {
@@ -187,11 +199,7 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
     elapsed_working_days = 0
     for day in range(1, last_day_for_avg + 1):
         date_str = f"{year}-{month:02d}-{day:02d}"
-        # Skip if before started_working
-        if started_working and date_str < started_working:
-            continue
-        # Count if it's a working day and not a vacation day
-        if day_types.get(date_str) == "WORKING_DAY" and date_str not in dopust_days:
+        if is_working_day(date_str):
             elapsed_working_days += 1
 
     avg_hours = total_hours_worked / elapsed_working_days if elapsed_working_days > 0 else 0
@@ -203,7 +211,7 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
             calendar.monthrange(year, month)[1] + 1,
         ):
             date_str = f"{year}-{month:02d}-{day:02d}"
-            if day_types.get(date_str) == "WORKING_DAY" and date_str not in dopust_days:
+            if is_working_day(date_str):
                 remaining_working_days += 1
 
     current_diff = running_total
@@ -530,6 +538,10 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
                     total_color = "#2E7D32" if total >= 0 else "#C62828"
                     total_text = format_time(total, show_plus=True)
                     d.append(draw.Text(total_text, 10, x + 8, y + 58, fill=total_color))
+
+                # Add WD indicator for working days
+                if is_working_day(date_str):
+                    d.append(draw.Text("WD", 8, x + cell_size["width"] - 4, y + cell_size["height"] - 4, fill="#666666", text_anchor="end", font_weight="bold"))
             else:
                 d.append(
                     draw.Rectangle(
