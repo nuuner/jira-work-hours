@@ -197,9 +197,13 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
 
     # Count working days that have passed (excluding vacation and pre-start days)
     elapsed_working_days = 0
+    today_str = today.isoformat()
     for day in range(1, last_day_for_avg + 1):
         date_str = f"{year}-{month:02d}-{day:02d}"
         if is_working_day(date_str):
+            # Only count today if there are hours logged for it
+            if date_str == today_str and date_str not in worked_time:
+                continue
             elapsed_working_days += 1
 
     avg_hours = total_hours_worked / elapsed_working_days if elapsed_working_days > 0 else 0
