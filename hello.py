@@ -541,7 +541,15 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
 
                 # Add WD indicator for working days
                 if is_working_day(date_str):
-                    d.append(draw.Text("WD", 8, x + cell_size["width"] - 4, y + cell_size["height"] - 4, fill="#666666", text_anchor="end", font_weight="bold"))
+                    # Determine opacity based on date
+                    current_date = date.fromisoformat(date_str)
+                    if current_date < today:
+                        wd_opacity = 0.5  # Past: 50% grey
+                    elif current_date == today:
+                        wd_opacity = 1.0  # Today: 100% opaque
+                    else:
+                        wd_opacity = 0.25  # Future: 25% grey
+                    d.append(draw.Text("WD", 8, x + cell_size["width"] - 4, y + cell_size["height"] - 4, fill="#666666", fill_opacity=wd_opacity, text_anchor="end", font_weight="bold"))
             else:
                 d.append(
                     draw.Rectangle(
