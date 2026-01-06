@@ -57,47 +57,57 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
     from_date = f"{year}-{month:02d}-01"
     to_date = f"{year}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
 
+    # Check if the target month is in the future - skip Jira queries if so
+    today = date.today()
+    target_month_date = date(year, month, 1)
+    is_future_month = target_month_date > today.replace(day=1)
+
     worked_time = {}
     dopust_days = set()  # Track days with annual leave
     sick_days = set()    # Track days with sick leave
-    try:
-        worklogs = jira.tempo_timesheets_get_worklogs(
-            date_from=from_date, date_to=to_date, username=jira_username
-        )
 
-        if worklogs and isinstance(worklogs, list):
-            for worklog in worklogs:
-                if (
-                    isinstance(worklog, dict)
-                    and "dateStarted" in worklog
-                    and "timeSpentSeconds" in worklog
-                ):
-                    extracted_date = worklog.get("dateStarted", "").split("T")[0]
+    if is_future_month:
+        # Skip Jira queries for future months - no work hours to fetch
+        pass
+    else:
+        try:
+            worklogs = jira.tempo_timesheets_get_worklogs(
+                date_from=from_date, date_to=to_date, username=jira_username
+            )
+
+            if worklogs and isinstance(worklogs, list):
+                for worklog in worklogs:
                     if (
-                        "issue" in worklog
-                        and isinstance(worklog["issue"], dict)
-                        and "summary" in worklog["issue"]
+                        isinstance(worklog, dict)
+                        and "dateStarted" in worklog
+                        and "timeSpentSeconds" in worklog
                     ):
-                        summary = worklog["issue"]["summary"]
-                        if summary.startswith("Letni dopust"):
-                            time_spent = daily_hours * 3600  # daily_hours in seconds
-                            dopust_days.add(extracted_date)
-                        elif summary.startswith("Bolniška odsotnost"):
-                            time_spent = worklog.get("timeSpentSeconds", 0)
-                            # for every 8 hours of work, remove half an hour of vacation
-                            factor_of_time_to_remove = (time_spent / 8) * 0.5
-                            time_spent = time_spent - factor_of_time_to_remove
-                            sick_days.add(extracted_date)
+                        extracted_date = worklog.get("dateStarted", "").split("T")[0]
+                        if (
+                            "issue" in worklog
+                            and isinstance(worklog["issue"], dict)
+                            and "summary" in worklog["issue"]
+                        ):
+                            summary = worklog["issue"]["summary"]
+                            if summary.startswith("Letni dopust"):
+                                time_spent = daily_hours * 3600  # daily_hours in seconds
+                                dopust_days.add(extracted_date)
+                            elif summary.startswith("Bolniška odsotnost"):
+                                time_spent = worklog.get("timeSpentSeconds", 0)
+                                # for every 8 hours of work, remove half an hour of vacation
+                                factor_of_time_to_remove = (time_spent / 8) * 0.5
+                                time_spent = time_spent - factor_of_time_to_remove
+                                sick_days.add(extracted_date)
+                            else:
+                                time_spent = worklog.get("timeSpentSeconds", 0)
                         else:
                             time_spent = worklog.get("timeSpentSeconds", 0)
-                    else:
-                        time_spent = worklog.get("timeSpentSeconds", 0)
-                    if extracted_date:
-                        worked_time[extracted_date] = (
-                            worked_time.get(extracted_date, 0) + time_spent
-                        )
-    except Exception as e:
-        print(f"Error fetching worklog data: {str(e)}")
+                        if extracted_date:
+                            worked_time[extracted_date] = (
+                                worked_time.get(extracted_date, 0) + time_spent
+                            )
+        except Exception as e:
+            print(f"Error fetching worklog data: {str(e)}")
 
     # Add additional vacation days
     for vacation_date in additional_vacation_days:
@@ -106,20 +116,25 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
             dopust_days.add(vacation_date)
 
     day_types = {}
-    try:
-        from_date = f"{year}-{month:02d}-01"
-        to_date = f"{year}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
-        required_times = jira.tempo_timesheets_get_required_times(
-            from_date=from_date, to_date=to_date, user_name=jira_username
-        )
-        if isinstance(required_times, list):
-            day_types = {
-                item["date"]: item["type"]
-                for item in required_times
-                if isinstance(item, dict)
-            }
-    except Exception as e:
-        print(f"Error fetching Jira data: {str(e)}")
+    if is_future_month:
+        # For future months, derive day types from calendar (weekdays = working, weekends = non-working)
+        for day in range(1, calendar.monthrange(year, month)[1] + 1):
+            date_str = f"{year}-{month:02d}-{day:02d}"
+            weekday = date(year, month, day).weekday()
+            day_types[date_str] = "NON_WORKING_DAY" if weekday >= 5 else "WORKING_DAY"
+    else:
+        try:
+            required_times = jira.tempo_timesheets_get_required_times(
+                from_date=from_date, to_date=to_date, user_name=jira_username
+            )
+            if isinstance(required_times, list):
+                day_types = {
+                    item["date"]: item["type"]
+                    for item in required_times
+                    if isinstance(item, dict)
+                }
+        except Exception as e:
+            print(f"Error fetching Jira data: {str(e)}")
 
     # Helper function to determine if a date is a working day
     def is_working_day(date_str: str) -> bool:
