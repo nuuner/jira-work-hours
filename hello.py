@@ -116,25 +116,18 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
             dopust_days.add(vacation_date)
 
     day_types = {}
-    if is_future_month:
-        # For future months, derive day types from calendar (weekdays = working, weekends = non-working)
-        for day in range(1, calendar.monthrange(year, month)[1] + 1):
-            date_str = f"{year}-{month:02d}-{day:02d}"
-            weekday = date(year, month, day).weekday()
-            day_types[date_str] = "NON_WORKING_DAY" if weekday >= 5 else "WORKING_DAY"
-    else:
-        try:
-            required_times = jira.tempo_timesheets_get_required_times(
-                from_date=from_date, to_date=to_date, user_name=jira_username
-            )
-            if isinstance(required_times, list):
-                day_types = {
-                    item["date"]: item["type"]
-                    for item in required_times
-                    if isinstance(item, dict)
-                }
-        except Exception as e:
-            print(f"Error fetching Jira data: {str(e)}")
+    try:
+        required_times = jira.tempo_timesheets_get_required_times(
+            from_date=from_date, to_date=to_date, user_name=jira_username
+        )
+        if isinstance(required_times, list):
+            day_types = {
+                item["date"]: item["type"]
+                for item in required_times
+                if isinstance(item, dict)
+            }
+    except Exception as e:
+        print(f"Error fetching Jira data: {str(e)}")
 
     # Helper function to determine if a date is a working day
     def is_working_day(date_str: str) -> bool:
