@@ -6,7 +6,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
-COPY hello.py .
+COPY hello.py vacation_optimizer.py ./
 
 RUN uv sync --frozen --no-cache
 

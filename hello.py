@@ -6,11 +6,15 @@ import drawsvg as draw
 import calendar
 from datetime import date, datetime, time, timedelta
 from fastapi import FastAPI, Query, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import Response, HTMLResponse
 from typing import Annotated
 import hmac
 import hashlib
 import math
+from vacation_optimizer import (
+    find_vacation_grid, create_vacation_grid_html,
+    find_periods_for_cell, create_vacation_cell_detail_html
+)
 
 cache_duration = 5  # Default is 5 minutes
 secret_key = "default-secret-key-change-me"
@@ -634,3 +638,82 @@ async def get_calendar(
         "Content-Type": "image/svg+xml",
     }
     return Response(content=svg_content, headers=headers)
+
+
+@app.get("/vacation-grid")
+async def vacation_grid(
+    year: Annotated[int, Query(ge=2000, le=2100)],
+    username: str,
+    hash: str,
+    budget: Annotated[int, Query(ge=1, le=50)] = 28,
+) -> HTMLResponse:
+    # Validate hash using month=0 convention for year-wide requests
+    expected_hash = generate_request_hash(year, 0, username)
+    if not hmac.compare_digest(hash, expected_hash):
+        raise HTTPException(status_code=403, detail="Invalid hash")
+
+    # Fetch Tempo data for the entire year
+    from_date = f"{year}-01-01"
+    to_date = f"{year}-12-31"
+
+    day_types = {}
+    try:
+        required_times = jira.tempo_timesheets_get_required_times(
+            from_date=from_date, to_date=to_date, user_name=username
+        )
+        if isinstance(required_times, list):
+            day_types = {
+                item["date"]: item["type"]
+                for item in required_times
+                if isinstance(item, dict)
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch Tempo data: {str(e)}")
+
+    # Build vacation grid
+    grid_data = find_vacation_grid(year, budget, day_types)
+
+    # Generate HTML response
+    html_content = create_vacation_grid_html(year, budget, username, hash, grid_data)
+
+    return HTMLResponse(content=html_content)
+
+
+@app.get("/vacation-grid-detail")
+async def vacation_grid_detail(
+    year: Annotated[int, Query(ge=2000, le=2100)],
+    username: str,
+    hash: str,
+    spent: Annotated[int, Query(ge=0, le=50)],
+    off: Annotated[int, Query(ge=1)],
+) -> HTMLResponse:
+    # Validate hash using month=0 convention for year-wide requests
+    expected_hash = generate_request_hash(year, 0, username)
+    if not hmac.compare_digest(hash, expected_hash):
+        raise HTTPException(status_code=403, detail="Invalid hash")
+
+    # Fetch Tempo data for the entire year
+    from_date = f"{year}-01-01"
+    to_date = f"{year}-12-31"
+
+    day_types = {}
+    try:
+        required_times = jira.tempo_timesheets_get_required_times(
+            from_date=from_date, to_date=to_date, user_name=username
+        )
+        if isinstance(required_times, list):
+            day_types = {
+                item["date"]: item["type"]
+                for item in required_times
+                if isinstance(item, dict)
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch Tempo data: {str(e)}")
+
+    # Find matching periods
+    periods = find_periods_for_cell(year, spent, off, day_types)
+
+    # Generate HTML response
+    html_content = create_vacation_cell_detail_html(year, spent, off, username, hash, periods)
+
+    return HTMLResponse(content=html_content)
