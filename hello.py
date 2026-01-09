@@ -668,7 +668,8 @@ async def vacation_grid(
                 if isinstance(item, dict)
             }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch Tempo data: {str(e)}")
+        print(f"Error fetching Tempo data: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch Tempo data")
 
     # Build vacation grid
     grid_data = find_vacation_grid(year, budget, day_types)
@@ -708,7 +709,8 @@ async def vacation_grid_detail(
                 if isinstance(item, dict)
             }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch Tempo data: {str(e)}")
+        print(f"Error fetching Tempo data: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch Tempo data")
 
     # Find matching periods
     periods = find_periods_for_cell(year, spent, off, day_types)
