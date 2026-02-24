@@ -96,11 +96,13 @@ def process_worklogs(worklogs, daily_hours: float) -> tuple[dict, set, set]:
     return worked_time, dopust_days, sick_days
 
 
-def compute_month_diff(year: int, month: int, worked_time: dict, day_types: dict, daily_hours: float, started_working: str | None) -> float:
-    """Compute total hours difference for a single month."""
+def compute_month_diff(year: int, month: int, worked_time: dict, day_types: dict, daily_hours: float, started_working: str | None, up_to_date: str | None = None) -> float:
+    """Compute total hours difference for a single month, optionally only up to a given date."""
     total_diff = 0.0
     for day in range(1, calendar.monthrange(year, month)[1] + 1):
         date_str = f"{year}-{month:02d}-{day:02d}"
+        if up_to_date and date_str > up_to_date:
+            break
         if started_working and date_str < started_working:
             expected_hours = 0
         else:
@@ -112,20 +114,22 @@ def compute_month_diff(year: int, month: int, worked_time: dict, day_types: dict
 
 
 def fetch_prior_months_diff(year: int, month: int, jira_username: str, daily_hours: float, started_working: str | None) -> float:
-    """Calculate accumulated difference from Jan 1st through the end of the month before the displayed one."""
+    """Calculate accumulated difference from Jan 1st through today (or end of prior month, whichever is earlier)."""
     if month <= 1:
         return 0.0
 
-    # Don't fetch prior months for future months
     today = date.today()
-    target_month_date = date(year, month, 1)
-    if target_month_date > today.replace(day=1):
+    today_str = today.isoformat()
+    from_date = f"{year}-01-01"
+
+    # If the entire prior range is in the future, no data to fetch
+    if from_date > today_str:
         return 0.0
 
-    # Fetch worklogs and day types for Jan 1 through end of prior month
-    from_date = f"{year}-01-01"
+    # Cap the API range at today or end of prior month
     last_prior_month = month - 1
-    to_date = f"{year}-{last_prior_month:02d}-{calendar.monthrange(year, last_prior_month)[1]:02d}"
+    end_of_prior = f"{year}-{last_prior_month:02d}-{calendar.monthrange(year, last_prior_month)[1]:02d}"
+    to_date = min(end_of_prior, today_str)
 
     worked_time = {}
     day_types = {}
@@ -151,10 +155,10 @@ def fetch_prior_months_diff(year: int, month: int, jira_username: str, daily_hou
     except Exception as e:
         print(f"Error fetching prior months day types: {str(e)}")
 
-    # Sum up month-by-month diffs
+    # Sum up month-by-month diffs, only counting days up to today
     accumulated = 0.0
     for m in range(1, month):
-        accumulated += compute_month_diff(year, m, worked_time, day_types, daily_hours, started_working)
+        accumulated += compute_month_diff(year, m, worked_time, day_types, daily_hours, started_working, up_to_date=today_str)
 
     return accumulated
 
@@ -224,16 +228,18 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
 
     running_total = prior_month_diff
     running_totals = {}
+    today_str = today.isoformat()
     for day in range(1, calendar.monthrange(year, month)[1] + 1):
         date_str = f"{year}-{month:02d}-{day:02d}"
-        day_type = day_types.get(date_str, "WORKING_DAY")
-        # Check if date is before started_working
-        if started_working and date_str < started_working:
-            expected_hours = 0
-        else:
-            expected_hours = daily_hours if day_type == "WORKING_DAY" else 0
-        hours_worked = worked_time.get(date_str, 0) / 3600
-        running_total += hours_worked - expected_hours
+        # Only accumulate differences for days up to today
+        if date_str <= today_str:
+            day_type = day_types.get(date_str, "WORKING_DAY")
+            if started_working and date_str < started_working:
+                expected_hours = 0
+            else:
+                expected_hours = daily_hours if day_type == "WORKING_DAY" else 0
+            hours_worked = worked_time.get(date_str, 0) / 3600
+            running_total += hours_worked - expected_hours
         running_totals[date_str] = running_total
 
     d = draw.Drawing(
