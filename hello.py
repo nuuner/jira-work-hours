@@ -56,7 +56,110 @@ def generate_request_hash(year: int, month: int, username: str) -> str:
     h = hmac.new(secret_key.encode('utf-8'), message, hashlib.sha256)
     return h.hexdigest()
 
-def create_calendar_svg(year: int, month: int, jira_username: str, additional_vacation_days: set[str] = set(), daily_hours: float = 7.5, started_working: str | None = None) -> str:
+def process_worklogs(worklogs, daily_hours: float) -> tuple[dict, set, set]:
+    """Parse worklogs into worked_time dict, dopust_days set, and sick_days set."""
+    worked_time = {}
+    dopust_days = set()
+    sick_days = set()
+
+    if worklogs and isinstance(worklogs, list):
+        for worklog in worklogs:
+            if (
+                isinstance(worklog, dict)
+                and "dateStarted" in worklog
+                and "timeSpentSeconds" in worklog
+            ):
+                extracted_date = worklog.get("dateStarted", "").split("T")[0]
+                if (
+                    "issue" in worklog
+                    and isinstance(worklog["issue"], dict)
+                    and "summary" in worklog["issue"]
+                ):
+                    summary = worklog["issue"]["summary"]
+                    if summary.startswith("Letni dopust"):
+                        time_spent = daily_hours * 3600
+                        dopust_days.add(extracted_date)
+                    elif summary.startswith("Bolniška odsotnost"):
+                        time_spent = worklog.get("timeSpentSeconds", 0)
+                        factor_of_time_to_remove = (time_spent / 8) * 0.5
+                        time_spent = time_spent - factor_of_time_to_remove
+                        sick_days.add(extracted_date)
+                    else:
+                        time_spent = worklog.get("timeSpentSeconds", 0)
+                else:
+                    time_spent = worklog.get("timeSpentSeconds", 0)
+                if extracted_date:
+                    worked_time[extracted_date] = (
+                        worked_time.get(extracted_date, 0) + time_spent
+                    )
+
+    return worked_time, dopust_days, sick_days
+
+
+def compute_month_diff(year: int, month: int, worked_time: dict, day_types: dict, daily_hours: float, started_working: str | None) -> float:
+    """Compute total hours difference for a single month."""
+    total_diff = 0.0
+    for day in range(1, calendar.monthrange(year, month)[1] + 1):
+        date_str = f"{year}-{month:02d}-{day:02d}"
+        if started_working and date_str < started_working:
+            expected_hours = 0
+        else:
+            day_type = day_types.get(date_str, "WORKING_DAY")
+            expected_hours = daily_hours if day_type == "WORKING_DAY" else 0
+        hours_worked = worked_time.get(date_str, 0) / 3600
+        total_diff += hours_worked - expected_hours
+    return total_diff
+
+
+def fetch_prior_months_diff(year: int, month: int, jira_username: str, daily_hours: float, started_working: str | None) -> float:
+    """Calculate accumulated difference from Jan 1st through the end of the month before the displayed one."""
+    if month <= 1:
+        return 0.0
+
+    # Don't fetch prior months for future months
+    today = date.today()
+    target_month_date = date(year, month, 1)
+    if target_month_date > today.replace(day=1):
+        return 0.0
+
+    # Fetch worklogs and day types for Jan 1 through end of prior month
+    from_date = f"{year}-01-01"
+    last_prior_month = month - 1
+    to_date = f"{year}-{last_prior_month:02d}-{calendar.monthrange(year, last_prior_month)[1]:02d}"
+
+    worked_time = {}
+    day_types = {}
+
+    try:
+        worklogs = jira.tempo_timesheets_get_worklogs(
+            date_from=from_date, date_to=to_date, username=jira_username
+        )
+        worked_time, _, _ = process_worklogs(worklogs, daily_hours)
+    except Exception as e:
+        print(f"Error fetching prior months worklogs: {str(e)}")
+
+    try:
+        required_times = jira.tempo_timesheets_get_required_times(
+            from_date=from_date, to_date=to_date, user_name=jira_username
+        )
+        if isinstance(required_times, list):
+            day_types = {
+                item["date"]: item["type"]
+                for item in required_times
+                if isinstance(item, dict)
+            }
+    except Exception as e:
+        print(f"Error fetching prior months day types: {str(e)}")
+
+    # Sum up month-by-month diffs
+    accumulated = 0.0
+    for m in range(1, month):
+        accumulated += compute_month_diff(year, m, worked_time, day_types, daily_hours, started_working)
+
+    return accumulated
+
+
+def create_calendar_svg(year: int, month: int, jira_username: str, additional_vacation_days: set[str] = set(), daily_hours: float = 7.5, started_working: str | None = None, prior_month_diff: float = 0.0) -> str:
 
     from_date = f"{year}-{month:02d}-01"
     to_date = f"{year}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
@@ -67,49 +170,17 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
     is_future_month = target_month_date > today.replace(day=1)
 
     worked_time = {}
-    dopust_days = set()  # Track days with annual leave
-    sick_days = set()    # Track days with sick leave
+    dopust_days = set()
+    sick_days = set()
 
     if is_future_month:
-        # Skip Jira queries for future months - no work hours to fetch
         pass
     else:
         try:
             worklogs = jira.tempo_timesheets_get_worklogs(
                 date_from=from_date, date_to=to_date, username=jira_username
             )
-
-            if worklogs and isinstance(worklogs, list):
-                for worklog in worklogs:
-                    if (
-                        isinstance(worklog, dict)
-                        and "dateStarted" in worklog
-                        and "timeSpentSeconds" in worklog
-                    ):
-                        extracted_date = worklog.get("dateStarted", "").split("T")[0]
-                        if (
-                            "issue" in worklog
-                            and isinstance(worklog["issue"], dict)
-                            and "summary" in worklog["issue"]
-                        ):
-                            summary = worklog["issue"]["summary"]
-                            if summary.startswith("Letni dopust"):
-                                time_spent = daily_hours * 3600  # daily_hours in seconds
-                                dopust_days.add(extracted_date)
-                            elif summary.startswith("Bolniška odsotnost"):
-                                time_spent = worklog.get("timeSpentSeconds", 0)
-                                # for every 8 hours of work, remove half an hour of vacation
-                                factor_of_time_to_remove = (time_spent / 8) * 0.5
-                                time_spent = time_spent - factor_of_time_to_remove
-                                sick_days.add(extracted_date)
-                            else:
-                                time_spent = worklog.get("timeSpentSeconds", 0)
-                        else:
-                            time_spent = worklog.get("timeSpentSeconds", 0)
-                        if extracted_date:
-                            worked_time[extracted_date] = (
-                                worked_time.get(extracted_date, 0) + time_spent
-                            )
+            worked_time, dopust_days, sick_days = process_worklogs(worklogs, daily_hours)
         except Exception as e:
             print(f"Error fetching worklog data: {str(e)}")
 
@@ -151,7 +222,7 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
         "HOLIDAY_AND_NON_WORKING_DAY": "#E1E9EE",
     }
 
-    running_total = 0
+    running_total = prior_month_diff
     running_totals = {}
     for day in range(1, calendar.monthrange(year, month)[1] + 1):
         date_str = f"{year}-{month:02d}-{day:02d}"
@@ -249,7 +320,7 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
 
     stats_labels = [
         "Average hours worked per day",
-        "Accumulated difference",
+        "Year accumulated difference",
     ]
 
     stats_values = [
@@ -625,7 +696,8 @@ async def get_calendar(
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid date format in vacationDays. Use ISO format YYYY-MM-DD")
 
-        svg_content = create_calendar_svg(year, month, username, additional_vacation_days, dailyHours, startedWorking)
+        prior_diff = fetch_prior_months_diff(year, month, username, dailyHours, startedWorking)
+        svg_content = create_calendar_svg(year, month, username, additional_vacation_days, dailyHours, startedWorking, prior_diff)
         
         # Update cache
         svg_cache[cache_key] = {
