@@ -23,6 +23,36 @@ jira_api_token = "invalid-token"
 jira = None
 
 svg_cache = {}
+required_times_cache = {}
+
+
+def _is_cache_fresh(cached_at: datetime) -> bool:
+    return cached_at > datetime.now() - timedelta(minutes=cache_duration)
+
+
+def _get_required_times_cached(from_date: str, to_date: str, user_name: str) -> dict[str, str]:
+    cache_key = f"{from_date}:{to_date}:{user_name}"
+    cached = required_times_cache.get(cache_key)
+    if cached and _is_cache_fresh(cached["timestamp"]):
+        return cached["day_types"]
+
+    required_times = jira.tempo_timesheets_get_required_times(
+        from_date=from_date, to_date=to_date, user_name=user_name
+    )
+    day_types = (
+        {
+            item["date"]: item["type"]
+            for item in required_times
+            if isinstance(item, dict)
+        }
+        if isinstance(required_times, list)
+        else {}
+    )
+    required_times_cache[cache_key] = {
+        "day_types": day_types,
+        "timestamp": datetime.now(),
+    }
+    return day_types
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -163,7 +193,7 @@ def fetch_prior_months_diff(year: int, month: int, jira_username: str, daily_hou
     return accumulated
 
 
-def create_calendar_svg(year: int, month: int, jira_username: str, additional_vacation_days: set[str] = set(), daily_hours: float = 7.5, started_working: str | None = None, prior_month_diff: float = 0.0) -> str:
+def create_calendar_svg(year: int, month: int, jira_username: str, additional_vacation_days: set[str] | None = None, daily_hours: float = 7.5, started_working: str | None = None, prior_month_diff: float = 0.0) -> str:
 
     from_date = f"{year}-{month:02d}-01"
     to_date = f"{year}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
@@ -189,24 +219,16 @@ def create_calendar_svg(year: int, month: int, jira_username: str, additional_va
             print(f"Error fetching worklog data: {str(e)}")
 
     # Add additional vacation days
-    for vacation_date in additional_vacation_days:
+    for vacation_date in (additional_vacation_days or set()):
         if vacation_date.startswith(f"{year}-{month:02d}"):  # Only process dates in the target month
             worked_time[vacation_date] = daily_hours * 3600  # daily_hours in seconds
             dopust_days.add(vacation_date)
 
-    day_types = {}
     try:
-        required_times = jira.tempo_timesheets_get_required_times(
-            from_date=from_date, to_date=to_date, user_name=jira_username
-        )
-        if isinstance(required_times, list):
-            day_types = {
-                item["date"]: item["type"]
-                for item in required_times
-                if isinstance(item, dict)
-            }
+        day_types = _get_required_times_cached(from_date, to_date, jira_username)
     except Exception as e:
         print(f"Error fetching Jira data: {str(e)}")
+        day_types = {}
 
     # Helper function to determine if a date is a working day
     def is_working_day(date_str: str) -> bool:
@@ -688,7 +710,7 @@ async def get_calendar(
 
     # Check cache first
     cache_key = f"{year}-{month}-{username}-{vacationDays or ''}-{dailyHours}-{startedWorking or ''}"
-    if cache_key in svg_cache and svg_cache[cache_key]["timestamp"] > datetime.now() - timedelta(minutes=cache_duration):
+    if cache_key in svg_cache and _is_cache_fresh(svg_cache[cache_key]["timestamp"]):
         svg_content = svg_cache[cache_key]["svg"]
     else:
         # Parse vacation days if provided
@@ -734,17 +756,8 @@ async def vacation_grid(
     from_date = f"{year}-01-01"
     to_date = f"{year}-12-31"
 
-    day_types = {}
     try:
-        required_times = jira.tempo_timesheets_get_required_times(
-            from_date=from_date, to_date=to_date, user_name=username
-        )
-        if isinstance(required_times, list):
-            day_types = {
-                item["date"]: item["type"]
-                for item in required_times
-                if isinstance(item, dict)
-            }
+        day_types = _get_required_times_cached(from_date, to_date, username)
     except Exception as e:
         print(f"Error fetching Tempo data: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch Tempo data")
@@ -775,17 +788,8 @@ async def vacation_grid_detail(
     from_date = f"{year}-01-01"
     to_date = f"{year}-12-31"
 
-    day_types = {}
     try:
-        required_times = jira.tempo_timesheets_get_required_times(
-            from_date=from_date, to_date=to_date, user_name=username
-        )
-        if isinstance(required_times, list):
-            day_types = {
-                item["date"]: item["type"]
-                for item in required_times
-                if isinstance(item, dict)
-            }
+        day_types = _get_required_times_cached(from_date, to_date, username)
     except Exception as e:
         print(f"Error fetching Tempo data: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch Tempo data")
