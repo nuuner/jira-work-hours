@@ -1,6 +1,63 @@
+import math
 from datetime import date, timedelta
 from html import escape
 from typing import Iterator
+
+
+# How strongly leverage (bonus free days per vacation day spent) is rewarded.
+# The score is driven by leverage = free/spent = (ratio - 1), so a low-leverage
+# block ("spend 24 days for 37 off" = 0.54 leverage) scores near zero however
+# long it is, while a cheap high-leverage bridge rises to the top. >2 emphasizes
+# leverage even harder; <2 lets raw size matter more.
+LEVERAGE_EXP = 2.0
+
+# Tempo day types that represent a public holiday (the second also falls on a
+# weekend). Distinguishing these from a plain NON_WORKING_DAY is what lets us
+# count holidays correctly even when they land on a Saturday/Sunday.
+HOLIDAY_TYPES = ("HOLIDAY", "HOLIDAY_AND_NON_WORKING_DAY")
+
+
+def score_period(
+    spent: int, off: int, holidays: int = 0,
+    holiday_weight: float = 0.25, leverage_exp: float = LEVERAGE_EXP,
+) -> float:
+    """
+    Interestingness score for a vacation period.
+
+    score = (free / spent) ** leverage_exp * free * (1 + holiday_weight * holidays)
+
+    where free = off - spent and free/spent = (off/spent - 1) is the *leverage*:
+    the bonus days off earned per vacation day spent. Driving the score by leverage
+    rather than the raw ratio means a long low-leverage block (e.g. spend 24 to get
+    37 off, leverage 0.54) scores near zero no matter how many total free days it
+    contains, while a clever cheap bridge (spend 1 to get 4, leverage 3) dominates.
+    Among periods of equal leverage the larger one wins, via the `* free` term: the
+    canonical "spend 1 get 3" and "spend 3 get 9" both have leverage 2 and score 8
+    vs 24 -- exactly 3x apart. Bridged weekday holidays add a further bonus, since
+    they are the rarer, more valuable trick than merely extending a weekend.
+    """
+    if spent <= 0:
+        return 0.0
+    free = off - spent
+    if free <= 0:
+        return 0.0
+    leverage = free / spent
+    return (leverage ** leverage_exp) * free * (1 + holiday_weight * holidays)
+
+
+def _count_holidays(timeline: list[dict], start: int, end: int) -> int:
+    """Count all public holidays within a period, including those on weekends."""
+    return sum(1 for i in range(start, end + 1) if timeline[i]["type"] in HOLIDAY_TYPES)
+
+
+def _count_bridged_holidays(timeline: list[dict], start: int, end: int) -> int:
+    """
+    Count holidays that fall on a working day (type HOLIDAY) within a period.
+
+    Only these grant an extra free day you'd not otherwise have, so they -- not
+    holidays that land on a weekend -- are what earns the scoring bonus.
+    """
+    return sum(1 for i in range(start, end + 1) if timeline[i]["type"] == "HOLIDAY")
 
 
 def _get_year_timeline(year: int, day_types: dict[str, str]) -> tuple[list[dict], int]:
@@ -99,12 +156,24 @@ def find_vacation_grid(year: int, max_budget: int, day_types: dict[str, str]) ->
         counts[key] = counts.get(key, 0) + 1
         max_days_off = max(max_days_off, off)
 
+    # Highest interestingness score across all populated cells, used to
+    # normalize the heatmap coloring. Computed per (spent, off) without the
+    # holiday bonus so a cell's color is deterministic.
+    max_score = 0.0
+    for spent, off in counts:
+        max_score = max(max_score, score_period(spent, off))
+
     grid = []
     for days_off in range(1, max_days_off + 1):
         row = [counts.get((days_spent, days_off), 0) for days_spent in range(0, max_budget + 1)]
         grid.append(row)
 
-    return {"grid": grid, "max_days_off": max_days_off, "max_budget": max_budget}
+    return {
+        "grid": grid,
+        "max_days_off": max_days_off,
+        "max_budget": max_budget,
+        "max_score": max_score,
+    }
 
 
 def find_periods_for_cell(
@@ -160,6 +229,106 @@ def find_periods_for_cell(
     return matching
 
 
+def find_top_opportunities(
+    year: int, max_budget: int, day_types: dict[str, str], top_n: int = 6,
+    context_days: int = 2, min_fraction: float = 0.1,
+) -> list[dict]:
+    """
+    Find the most interesting vacation periods of the year, ranked by score.
+
+    Periods are scored, sorted, then greedily selected so that no two highlighted
+    opportunities overlap on the calendar (otherwise the Christmas cluster, say,
+    would fill every slot with near-duplicate windows). Only periods scoring at
+    least `min_fraction` of the best opportunity are shown, so the panel is not
+    padded with dull brute-force blocks when fewer genuinely good options exist.
+    """
+    timeline, year_end_idx = _get_year_timeline(year, day_types)
+    if not timeline:
+        return []
+
+    scored = []
+    for spent, off, ext_start, ext_end in _iter_vacation_periods(timeline, year_end_idx, max_budget):
+        if spent <= 0:
+            continue
+        holidays = _count_holidays(timeline, ext_start, ext_end)
+        bridged = _count_bridged_holidays(timeline, ext_start, ext_end)
+        score = score_period(spent, off, bridged)
+        if score <= 0:
+            continue
+        scored.append((score, spent, off, ext_start, ext_end, holidays, bridged))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    if not scored:
+        return []
+    score_floor = scored[0][0] * min_fraction
+
+    selected = []
+    used: list[tuple[int, int]] = []
+    seen_recipes: set[tuple[int, int]] = set()
+    for score, spent, off, ext_start, ext_end, holidays, bridged in scored:
+        if score < score_floor:
+            break
+        # Show distinct kinds of opportunity: skip a (spent, off) recipe we've
+        # already highlighted, and skip windows that overlap a selected one.
+        if (spent, off) in seen_recipes:
+            continue
+        if any(not (ext_end < s or ext_start > e) for s, e in used):
+            continue
+        seen_recipes.add((spent, off))
+        used.append((ext_start, ext_end))
+
+        display_start = max(0, ext_start - context_days)
+        display_end = min(len(timeline) - 1, ext_end + context_days)
+        days = []
+        for i in range(display_start, display_end + 1):
+            day = timeline[i]
+            in_period = ext_start <= i <= ext_end
+            days.append({
+                "date": day["date"],
+                "is_working": day["is_working"],
+                "is_weekend": day["is_weekend"],
+                "day_type": day["type"],
+                "in_period": in_period,
+                "opacity": 1.0 if in_period else 0.35,
+            })
+
+        selected.append({
+            "start_date": timeline[ext_start]["date"],
+            "end_date": timeline[ext_end]["date"],
+            "spent": spent,
+            "off": off,
+            "holidays": holidays,
+            "weekend_holidays": holidays - bridged,
+            "score": score,
+            "days": days,
+        })
+
+        if len(selected) >= top_n:
+            break
+
+    return selected
+
+
+def _render_day_squares(days: list[dict]) -> str:
+    """Render a period's days as colored squares (shared by detail + highlight views)."""
+    squares = ""
+    for day in days:
+        in_period = day.get("in_period", True)
+        if day["is_working"]:
+            color = "#1976D2" if in_period else "#9E9E9E"
+        elif day["is_weekend"]:
+            color = "#CE93D8"
+        else:
+            color = "#81D4FA"
+
+        opacity = day.get("opacity", 1.0)
+        title = day["date"].strftime("%d %b %a")
+        if in_period and day["is_working"]:
+            title += " (vacation)"
+        squares += f'<span class="day-sq" style="background:{color};opacity:{opacity:.2f}" title="{title}"></span>'
+    return squares
+
+
 def create_vacation_cell_detail_html(
     year: int, days_spent: int, days_off: int, username: str, hash_value: str, periods: list[dict]
 ) -> str:
@@ -169,24 +338,7 @@ def create_vacation_cell_detail_html(
         start_fmt = p["start_date"].strftime("%d %b")
         end_fmt = p["end_date"].strftime("%d %b")
 
-        squares = ""
-        for day in p["days"]:
-            in_period = day.get("in_period", True)
-            if day["is_working"]:
-                if in_period:
-                    color = "#1976D2"  # Blue - vacation day
-                else:
-                    color = "#9E9E9E"  # Grey - regular working day (context)
-            elif day["is_weekend"]:
-                color = "#CE93D8"  # Light purple - weekend
-            else:
-                color = "#81D4FA"  # Light blue - holiday
-
-            opacity = day.get("opacity", 1.0)
-            title = day["date"].strftime("%d %b %a")
-            if in_period and day["is_working"]:
-                title += " (vacation)"
-            squares += f'<span class="day-sq" style="background:{color};opacity:{opacity:.2f}" title="{title}"></span>'
+        squares = _render_day_squares(p["days"])
 
         rows_html += f"""
             <tr>
@@ -296,19 +448,23 @@ def create_vacation_cell_detail_html(
 
 
 def create_vacation_grid_html(
-    year: int, budget: int, username: str, hash_value: str, grid_data: dict
+    year: int, budget: int, username: str, hash_value: str, grid_data: dict,
+    opportunities: list[dict] | None = None
 ) -> str:
     """Generate HTML page displaying vacation grid."""
     grid = grid_data["grid"]
     max_days_off = grid_data["max_days_off"]
     max_budget = grid_data["max_budget"]
+    max_score = grid_data.get("max_score", 0.0)
+    opportunities = opportunities or []
 
-    def ratio_to_color(ratio: float) -> tuple[str, str]:
-        """Convert ratio to background color and text color using smooth heatmap."""
-        r = max(1.0, min(4.0, ratio))
-        hue = 30 + (r - 1.0) * (210 - 30) / (4.0 - 1.0)
-        bg = f"hsl({hue:.0f}, 70%, 45%)"
-        return bg, "white"
+    def score_to_color(score: float) -> tuple[str, str]:
+        """Convert interestingness score to a heatmap color (log-normalized)."""
+        if max_score <= 0 or score <= 0:
+            return "hsl(30, 70%, 45%)", "white"
+        t = math.log1p(score) / math.log1p(max_score)
+        hue = 30 + t * (210 - 30)
+        return f"hsl({hue:.0f}, 70%, 45%)", "white"
 
     rows_html = ""
     for days_off_idx, row in enumerate(reversed(grid)):
@@ -319,11 +475,40 @@ def create_vacation_grid_html(
             if count == 0:
                 cells += '<td class="cell empty">0</td>'
             else:
-                ratio = days_off / days_spent if days_spent > 0 else float('inf')
-                bg, text = ratio_to_color(ratio)
+                score = score_period(days_spent, days_off)
+                bg, text = score_to_color(score)
                 link = f"/vacation-grid-detail?year={year}&username={escape(username)}&hash={escape(hash_value)}&spent={days_spent}&off={days_off}"
                 cells += f'<td class="cell" style="background:{bg};color:{text}"><a href="{link}">{count}</a></td>'
         rows_html += f"<tr>{cells}</tr>\n"
+
+    # Right-side "Top opportunities" panel
+    cards_html = ""
+    for i, opp in enumerate(opportunities, 1):
+        spent, off = opp["spent"], opp["off"]
+        ratio_text = f"{off / spent:.1f}x" if spent > 0 else "FREE"
+        start_fmt = opp["start_date"].strftime("%d %b")
+        end_fmt = opp["end_date"].strftime("%d %b")
+        squares = _render_day_squares(opp["days"])
+        holiday_badge = ""
+        if opp["holidays"]:
+            n = opp["holidays"]
+            label = f'🎉 {n} holiday{"s" if n != 1 else ""}'
+            weekend = opp["weekend_holidays"]
+            if weekend:
+                label += f' ({weekend} on weekend)'
+            holiday_badge = f'<span class="badge">{label}</span>'
+        link = f"/vacation-grid-detail?year={year}&username={escape(username)}&hash={escape(hash_value)}&spent={spent}&off={off}"
+        cards_html += f"""
+            <a class="opp-card" href="{link}">
+                <div class="opp-head">
+                    <span class="opp-rank">#{i}</span>
+                    <span class="opp-headline">{spent}&rarr;{off} days <span class="opp-ratio">{ratio_text}</span></span>
+                </div>
+                <div class="opp-dates">{start_fmt} &ndash; {end_fmt} {holiday_badge}</div>
+                <div class="day-squares">{squares}</div>
+            </a>"""
+    if not opportunities:
+        cards_html = '<p style="color:#999;font-size:11px;">No opportunities found.</p>'
 
     x_labels = '<td class="axis-label"></td>'
     for days_spent in range(0, max_budget + 1):
@@ -390,6 +575,49 @@ def create_vacation_grid_html(
             height: 12px;
             border-radius: 2px;
         }}
+        .layout {{
+            display: flex;
+            gap: 16px;
+            align-items: flex-start;
+            flex-wrap: wrap;
+        }}
+        .grid-side {{ flex: 1 1 auto; min-width: 0; }}
+        .opp-side {{
+            flex: 0 0 240px;
+            max-width: 100%;
+        }}
+        .opp-side h2 {{
+            font-size: 14px;
+            margin: 0 0 2px 0;
+            color: #1976D2;
+        }}
+        .opp-sub {{ font-size: 11px; color: #999; margin: 0 0 8px 0; }}
+        .opp-card {{
+            display: block;
+            text-decoration: none;
+            color: inherit;
+            background: #fff;
+            border: 1px solid #eee;
+            border-radius: 6px;
+            padding: 8px;
+            margin-bottom: 8px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+        }}
+        .opp-card:hover {{ border-color: #1976D2; box-shadow: 0 2px 6px rgba(25,118,210,0.15); }}
+        .opp-head {{ display: flex; align-items: baseline; gap: 6px; }}
+        .opp-rank {{ font-size: 11px; color: #999; font-weight: 600; }}
+        .opp-headline {{ font-size: 13px; font-weight: 600; color: #333; }}
+        .opp-ratio {{ color: #1976D2; }}
+        .opp-dates {{ font-size: 11px; color: #666; margin: 2px 0 6px 0; }}
+        .badge {{
+            display: inline-block;
+            font-size: 10px;
+            color: #00796B;
+            background: #E0F2F1;
+            border-radius: 3px;
+            padding: 1px 4px;
+            margin-left: 4px;
+        }}
         form {{
             margin-top: 10px;
             padding: 8px;
@@ -423,22 +651,32 @@ def create_vacation_grid_html(
     <p>Each cell shows count of vacation periods. X: days spent, Y: days off</p>
 
     <div class="legend">
-        <div class="legend-item"><div class="legend-box" style="background:linear-gradient(to right, hsl(30,70%,45%), hsl(90,70%,45%), hsl(150,70%,45%), hsl(210,70%,45%));width:80px"></div> 1x &rarr; 4x ratio</div>
+        <div class="legend-item"><div class="legend-box" style="background:linear-gradient(to right, hsl(30,70%,45%), hsl(90,70%,45%), hsl(150,70%,45%), hsl(210,70%,45%));width:80px"></div> less &rarr; more interesting</div>
         <div class="legend-item"><div class="legend-box" style="background:#f0f0f0;border:1px solid #ddd"></div> None</div>
     </div>
 
-    <p class="axis-title">Y: Days off &darr;</p>
-    <div class="grid-container">
-        <table>
-            <tbody>
-                {rows_html}
-            </tbody>
-            <tfoot>
-                <tr>{x_labels}</tr>
-            </tfoot>
-        </table>
+    <div class="layout">
+        <div class="grid-side">
+            <p class="axis-title">Y: Days off &darr;</p>
+            <div class="grid-container">
+                <table>
+                    <tbody>
+                        {rows_html}
+                    </tbody>
+                    <tfoot>
+                        <tr>{x_labels}</tr>
+                    </tfoot>
+                </table>
+            </div>
+            <p class="axis-title">X: Days spent &rarr;</p>
+        </div>
+
+        <aside class="opp-side">
+            <h2>⭐ Top opportunities</h2>
+            <p class="opp-sub">Best bang-for-buck breaks, ranked by interestingness.</p>
+            {cards_html}
+        </aside>
     </div>
-    <p class="axis-title">X: Days spent &rarr;</p>
 
     <form method="GET">
         <input type="hidden" name="year" value="{year}">

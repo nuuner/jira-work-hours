@@ -13,7 +13,8 @@ import hashlib
 import math
 from vacation_optimizer import (
     find_vacation_grid, create_vacation_grid_html,
-    find_periods_for_cell, create_vacation_cell_detail_html
+    find_periods_for_cell, create_vacation_cell_detail_html,
+    find_top_opportunities
 )
 
 cache_duration = 5  # Default is 5 minutes
@@ -752,9 +753,10 @@ async def vacation_grid(
     if not hmac.compare_digest(hash, expected_hash):
         raise HTTPException(status_code=403, detail="Invalid hash")
 
-    # Fetch Tempo data for the entire year
+    # Fetch Tempo data for the year, plus early January of the next year so
+    # cross-year breaks (e.g. Christmas through New Year) can see those holidays.
     from_date = f"{year}-01-01"
-    to_date = f"{year}-12-31"
+    to_date = f"{year + 1}-01-10"
 
     try:
         day_types = _get_required_times_cached(from_date, to_date, username)
@@ -762,11 +764,12 @@ async def vacation_grid(
         print(f"Error fetching Tempo data: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch Tempo data")
 
-    # Build vacation grid
+    # Build vacation grid and rank the most interesting opportunities
     grid_data = find_vacation_grid(year, budget, day_types)
+    opportunities = find_top_opportunities(year, budget, day_types)
 
     # Generate HTML response
-    html_content = create_vacation_grid_html(year, budget, username, hash, grid_data)
+    html_content = create_vacation_grid_html(year, budget, username, hash, grid_data, opportunities)
 
     return HTMLResponse(content=html_content)
 
@@ -784,9 +787,10 @@ async def vacation_grid_detail(
     if not hmac.compare_digest(hash, expected_hash):
         raise HTTPException(status_code=403, detail="Invalid hash")
 
-    # Fetch Tempo data for the entire year
+    # Fetch Tempo data for the year, plus early January of the next year so
+    # cross-year breaks (e.g. Christmas through New Year) can see those holidays.
     from_date = f"{year}-01-01"
-    to_date = f"{year}-12-31"
+    to_date = f"{year + 1}-01-10"
 
     try:
         day_types = _get_required_times_cached(from_date, to_date, username)
