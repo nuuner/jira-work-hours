@@ -753,9 +753,10 @@ async def vacation_grid(
     if not hmac.compare_digest(hash, expected_hash):
         raise HTTPException(status_code=403, detail="Invalid hash")
 
-    # Fetch Tempo data for the entire year
+    # Fetch Tempo data for the year, plus early January of the next year so
+    # cross-year breaks (e.g. Christmas through New Year) can see those holidays.
     from_date = f"{year}-01-01"
-    to_date = f"{year}-12-31"
+    to_date = f"{year + 1}-01-10"
 
     try:
         day_types = _get_required_times_cached(from_date, to_date, username)
@@ -786,9 +787,10 @@ async def vacation_grid_detail(
     if not hmac.compare_digest(hash, expected_hash):
         raise HTTPException(status_code=403, detail="Invalid hash")
 
-    # Fetch Tempo data for the entire year
+    # Fetch Tempo data for the year, plus early January of the next year so
+    # cross-year breaks (e.g. Christmas through New Year) can see those holidays.
     from_date = f"{year}-01-01"
-    to_date = f"{year}-12-31"
+    to_date = f"{year + 1}-01-10"
 
     try:
         day_types = _get_required_times_cached(from_date, to_date, username)
