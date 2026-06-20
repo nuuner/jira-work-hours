@@ -255,7 +255,7 @@ def find_top_opportunities(
         score = score_period(spent, off, bridged)
         if score <= 0:
             continue
-        scored.append((score, spent, off, ext_start, ext_end, holidays))
+        scored.append((score, spent, off, ext_start, ext_end, holidays, bridged))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     if not scored:
@@ -265,7 +265,7 @@ def find_top_opportunities(
     selected = []
     used: list[tuple[int, int]] = []
     seen_recipes: set[tuple[int, int]] = set()
-    for score, spent, off, ext_start, ext_end, holidays in scored:
+    for score, spent, off, ext_start, ext_end, holidays, bridged in scored:
         if score < score_floor:
             break
         # Show distinct kinds of opportunity: skip a (spent, off) recipe we've
@@ -298,6 +298,7 @@ def find_top_opportunities(
             "spent": spent,
             "off": off,
             "holidays": holidays,
+            "weekend_holidays": holidays - bridged,
             "score": score,
             "days": days,
         })
@@ -488,10 +489,14 @@ def create_vacation_grid_html(
         start_fmt = opp["start_date"].strftime("%d %b")
         end_fmt = opp["end_date"].strftime("%d %b")
         squares = _render_day_squares(opp["days"])
-        holiday_badge = (
-            f'<span class="badge">🎉 {opp["holidays"]} holiday{"s" if opp["holidays"] != 1 else ""}</span>'
-            if opp["holidays"] else ""
-        )
+        holiday_badge = ""
+        if opp["holidays"]:
+            n = opp["holidays"]
+            label = f'🎉 {n} holiday{"s" if n != 1 else ""}'
+            weekend = opp["weekend_holidays"]
+            if weekend:
+                label += f' ({weekend} on weekend)'
+            holiday_badge = f'<span class="badge">{label}</span>'
         link = f"/vacation-grid-detail?year={year}&username={escape(username)}&hash={escape(hash_value)}&spent={spent}&off={off}"
         cards_html += f"""
             <a class="opp-card" href="{link}">
