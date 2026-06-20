@@ -4,10 +4,17 @@ from html import escape
 from typing import Iterator
 
 
-# How strongly leverage (days off per day spent) is rewarded relative to raw
-# magnitude. 1.0 = balanced; >1 pushes brute-force "spend everything for a long
-# block" periods down so clever cheap bridges rise to the top.
-LEVERAGE_EXP = 1.5
+# How strongly leverage (bonus free days per vacation day spent) is rewarded.
+# The score is driven by leverage = free/spent = (ratio - 1), so a low-leverage
+# block ("spend 24 days for 37 off" = 0.54 leverage) scores near zero however
+# long it is, while a cheap high-leverage bridge rises to the top. >2 emphasizes
+# leverage even harder; <2 lets raw size matter more.
+LEVERAGE_EXP = 2.0
+
+# Tempo day types that represent a public holiday (the second also falls on a
+# weekend). Distinguishing these from a plain NON_WORKING_DAY is what lets us
+# count holidays correctly even when they land on a Saturday/Sunday.
+HOLIDAY_TYPES = ("HOLIDAY", "HOLIDAY_AND_NON_WORKING_DAY")
 
 
 def score_period(
@@ -17,33 +24,40 @@ def score_period(
     """
     Interestingness score for a vacation period.
 
-    score = (off - spent) * (off / spent) ** leverage_exp * (1 + holiday_weight * holidays)
+    score = (free / spent) ** leverage_exp * free * (1 + holiday_weight * holidays)
 
-    where free = off - spent. This rewards both the magnitude of free days gained
-    and the leverage (days off per day spent), so a clever holiday bridge that turns
-    3 spent days into 9 off scores far higher than a plain Friday-plus-weekend even
-    though both share a 3x ratio. The leverage exponent ensures a high-ratio cheap
-    bridge beats a long low-ratio block of the same free-day count, matching the
-    intuition that burning your whole budget for one long vacation is less "clever"
-    than a well-placed bridge. Holidays absorbed into the block add a further bonus,
-    since bridging public holidays is rarer than merely extending a weekend you'd
-    get anyway.
+    where free = off - spent and free/spent = (off/spent - 1) is the *leverage*:
+    the bonus days off earned per vacation day spent. Driving the score by leverage
+    rather than the raw ratio means a long low-leverage block (e.g. spend 24 to get
+    37 off, leverage 0.54) scores near zero no matter how many total free days it
+    contains, while a clever cheap bridge (spend 1 to get 4, leverage 3) dominates.
+    Among periods of equal leverage the larger one wins, via the `* free` term: the
+    canonical "spend 1 get 3" and "spend 3 get 9" both have leverage 2 and score 8
+    vs 24 -- exactly 3x apart. Bridged weekday holidays add a further bonus, since
+    they are the rarer, more valuable trick than merely extending a weekend.
     """
     if spent <= 0:
         return 0.0
     free = off - spent
     if free <= 0:
         return 0.0
-    return free * (off / spent) ** leverage_exp * (1 + holiday_weight * holidays)
+    leverage = free / spent
+    return (leverage ** leverage_exp) * free * (1 + holiday_weight * holidays)
 
 
 def _count_holidays(timeline: list[dict], start: int, end: int) -> int:
-    """Count public-holiday days (non-working, non-weekend) within a period."""
-    return sum(
-        1
-        for i in range(start, end + 1)
-        if not timeline[i]["is_working"] and not timeline[i]["is_weekend"]
-    )
+    """Count all public holidays within a period, including those on weekends."""
+    return sum(1 for i in range(start, end + 1) if timeline[i]["type"] in HOLIDAY_TYPES)
+
+
+def _count_bridged_holidays(timeline: list[dict], start: int, end: int) -> int:
+    """
+    Count holidays that fall on a working day (type HOLIDAY) within a period.
+
+    Only these grant an extra free day you'd not otherwise have, so they -- not
+    holidays that land on a weekend -- are what earns the scoring bonus.
+    """
+    return sum(1 for i in range(start, end + 1) if timeline[i]["type"] == "HOLIDAY")
 
 
 def _get_year_timeline(year: int, day_types: dict[str, str]) -> tuple[list[dict], int]:
@@ -216,14 +230,17 @@ def find_periods_for_cell(
 
 
 def find_top_opportunities(
-    year: int, max_budget: int, day_types: dict[str, str], top_n: int = 6, context_days: int = 2
+    year: int, max_budget: int, day_types: dict[str, str], top_n: int = 6,
+    context_days: int = 2, min_fraction: float = 0.1,
 ) -> list[dict]:
     """
     Find the most interesting vacation periods of the year, ranked by score.
 
     Periods are scored, sorted, then greedily selected so that no two highlighted
     opportunities overlap on the calendar (otherwise the Christmas cluster, say,
-    would fill every slot with near-duplicate windows).
+    would fill every slot with near-duplicate windows). Only periods scoring at
+    least `min_fraction` of the best opportunity are shown, so the panel is not
+    padded with dull brute-force blocks when fewer genuinely good options exist.
     """
     timeline, year_end_idx = _get_year_timeline(year, day_types)
     if not timeline:
@@ -234,17 +251,23 @@ def find_top_opportunities(
         if spent <= 0:
             continue
         holidays = _count_holidays(timeline, ext_start, ext_end)
-        score = score_period(spent, off, holidays)
+        bridged = _count_bridged_holidays(timeline, ext_start, ext_end)
+        score = score_period(spent, off, bridged)
         if score <= 0:
             continue
         scored.append((score, spent, off, ext_start, ext_end, holidays))
 
     scored.sort(key=lambda x: x[0], reverse=True)
+    if not scored:
+        return []
+    score_floor = scored[0][0] * min_fraction
 
     selected = []
     used: list[tuple[int, int]] = []
     seen_recipes: set[tuple[int, int]] = set()
     for score, spent, off, ext_start, ext_end, holidays in scored:
+        if score < score_floor:
+            break
         # Show distinct kinds of opportunity: skip a (spent, off) recipe we've
         # already highlighted, and skip windows that overlap a selected one.
         if (spent, off) in seen_recipes:
