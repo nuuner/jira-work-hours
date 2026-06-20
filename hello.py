@@ -13,7 +13,8 @@ import hashlib
 import math
 from vacation_optimizer import (
     find_vacation_grid, create_vacation_grid_html,
-    find_periods_for_cell, create_vacation_cell_detail_html
+    find_periods_for_cell, create_vacation_cell_detail_html,
+    find_top_opportunities
 )
 
 cache_duration = 5  # Default is 5 minutes
@@ -762,11 +763,12 @@ async def vacation_grid(
         print(f"Error fetching Tempo data: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch Tempo data")
 
-    # Build vacation grid
+    # Build vacation grid and rank the most interesting opportunities
     grid_data = find_vacation_grid(year, budget, day_types)
+    opportunities = find_top_opportunities(year, budget, day_types)
 
     # Generate HTML response
-    html_content = create_vacation_grid_html(year, budget, username, hash, grid_data)
+    html_content = create_vacation_grid_html(year, budget, username, hash, grid_data, opportunities)
 
     return HTMLResponse(content=html_content)
 
